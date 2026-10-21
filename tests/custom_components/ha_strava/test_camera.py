@@ -1,16 +1,17 @@
 """Test camera platform for ha_strava."""
 
+import json
 import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aioresponses import aioresponses
 from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_strava.const import CONF_PHOTOS, DOMAIN
+from tests.aiohttp_mock import aiohttp_mock
 
 # Mock homeassistant.components.camera to avoid turbojpeg dependency
 if "homeassistant.components.camera" not in sys.modules:
@@ -25,7 +26,11 @@ if "homeassistant.components.camera" not in sys.modules:
     camera_module.Camera = MockCamera
     sys.modules["homeassistant.components.camera"] = camera_module
 
-from custom_components.ha_strava.camera import UrlCam, async_setup_entry
+from custom_components.ha_strava.camera import (
+    UrlCam,
+    _DateTimeEncoder,
+    async_setup_entry,
+)
 
 
 class TestStravaCamera:
@@ -314,6 +319,44 @@ class TestStravaCamera:
             assert saved_data["abc123"]["date"] == test_date
 
     @pytest.mark.asyncio
+    async def test_store_uses_datetime_encoder_class(self, hass: HomeAssistant):
+        """Test that Store is constructed with a JSONEncoder subclass.
+
+        Regression test for a bug where a plain function was passed as the
+        encoder, which Store silently fails to apply (encoder must be a
+        type[JSONEncoder]), causing datetime values to never be persisted.
+        """
+        config_entry = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id="12345",
+            data={
+                CONF_CLIENT_ID: "test_client_id",
+                CONF_CLIENT_SECRET: "test_client_secret",
+            },
+            options={CONF_PHOTOS: True},
+            title="Test Strava User",
+        )
+        coordinator = MagicMock()
+        coordinator.entry = config_entry
+
+        with patch("custom_components.ha_strava.camera.Store") as mock_store_class:
+            UrlCam(coordinator, hass, athlete_id="12345")
+
+            _, kwargs = mock_store_class.call_args
+            assert kwargs["encoder"] is _DateTimeEncoder
+            assert isinstance(kwargs["encoder"], type)
+            assert issubclass(kwargs["encoder"], json.JSONEncoder)
+
+    def test_datetime_encoder_serializes_datetime_to_isoformat(self):
+        """Test that _DateTimeEncoder actually round-trips datetime values."""
+        test_date = datetime(2024, 1, 1, 12, 0, 0)
+        data = {"abc123": {"date": test_date, "url": "https://example.com/p.jpg"}}
+
+        serialized = json.dumps(data, cls=_DateTimeEncoder)
+
+        assert test_date.isoformat() in serialized
+
+    @pytest.mark.asyncio
     async def test_pickle_migration(self, hass: HomeAssistant, tmp_path):
         """Test migration from pickle file to Home Assistant storage."""
         config_entry = MockConfigEntry(
@@ -432,7 +475,7 @@ class TestStravaCamera:
         coordinator.entry = MagicMock(title="Strava: Test User")
         camera = UrlCam(coordinator, hass, athlete_id="12345")
 
-        with aioresponses() as mocked, patch(
+        with aiohttp_mock() as mocked, patch(
             "custom_components.ha_strava.camera._DEFAULT_IMAGE_URL",
             "https://example.com/default.png",
         ):
@@ -457,7 +500,7 @@ class TestStravaCamera:
             }
         }
 
-        with aioresponses() as mocked:
+        with aiohttp_mock() as mocked:
             mocked.get(
                 "https://example.com/photo1.jpg", status=200, body=b"photo-bytes"
             )
@@ -479,7 +522,7 @@ class TestStravaCamera:
             }
         }
 
-        with aioresponses() as mocked, patch(
+        with aiohttp_mock() as mocked, patch(
             "custom_components.ha_strava.camera._DEFAULT_IMAGE_URL",
             "https://example.com/default.png",
         ):
@@ -507,7 +550,7 @@ class TestStravaCamera:
             }
         }
 
-        with aioresponses() as mocked, patch(
+        with aiohttp_mock() as mocked, patch(
             "custom_components.ha_strava.camera._DEFAULT_IMAGE_URL",
             "https://example.com/default.png",
         ):
@@ -527,7 +570,7 @@ class TestStravaCamera:
         """Test _return_default_img returns None when the fetch is not a 200."""
         from custom_components.ha_strava.camera import _return_default_img
 
-        with aioresponses() as mocked, patch(
+        with aiohttp_mock() as mocked, patch(
             "custom_components.ha_strava.camera._DEFAULT_IMAGE_URL",
             "https://example.com/default.png",
         ):
